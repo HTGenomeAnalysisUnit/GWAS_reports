@@ -74,100 +74,65 @@ if (length(unique(na.omit(phenotypeTable[[params$phenotype]]))) == 2) {
 }
 ```
 
-## Manhattan Plot
+## Main results
+
+Main results are summarised here by Manhattan and QQ plot. Top SNPs (SNPs with LOG10P above `r params$annotation_min_log10p`) are annotated as follows:
+
+1. the SNP with the highest LOG10P value is selected for each gene
+2. the resulting SNPs are further grouped by 500kb windows and the SNP with the highest LOG10P value is then annotated in the plot with the name of the closest gene
 
 ```{python}
 #| tags: [parameters]
 
-regenie_filename = "test/p21001_i0.regenie.gz"
+regenie_merged = "test/p21001_i0.regenie.gz"
+annotated_tophits_filename = "test/p21001_i0.regenie.filtered.annotated.fixed.txt.gz"
+annotated_toploci_filename = "test/p21001_i0.toploci.annot.tsv"
 ```
-```{python, echo=FALSE, message=FALSE, warning=FALSE, dpi=300}
+
+```{python}
 import gwaslab as gl
-regenieTable = gl.Sumstats(regenie_filename, fmt="regenie", build="hg19")
-
-# #sources: https://www.r-graph-gallery.com/101_Manhattan_plot.html with modifications
-
-# regenieTable <- fread(params$regenie_merged, select = c("CHROM","GENPOS","LOG10P","ID"), header=TRUE, tmpdir="$PWD")
-# setnames(regenieTable, c("CHROM","GENPOS","LOG10P","ID"), c("chr","pos","log10p","rsid")) 
-# regenieTable <- regenieTable[, pvalue := 10^(-log10p)]
-# #source: https://www.r-graph-gallery.com/101_Manhattan_plot.html with modifications
-
-# annotatedTopHits <- fread(params$annotated_tophits_filename, select = c("ID", "CLOSEST_GENE_NAME"), header=TRUE, tmpdir="$PWD")
-# setnames(annotatedTopHits, "ID", "rsid")
-# #merge gene names of tophits to regenieTable
-
-# annotatedTopHits <- annotatedTopHits %>%  
-#     mutate(rsid = as.character(rsid))
-# regenieTable <- regenieTable %>%  
-#     mutate(rsid = as.character(rsid))
-
-# regenieTable_annotated <- left_join(regenieTable, annotatedTopHits, by = "rsid")
-
-# p <-  fast_manhattan(regenieTable_annotated, build='hg19', speed = "f",
-#                      color1 = "grey", color2 = "orange", pointsize = 2, 
-#                      highlight = regenieTable_annotated[regenieTable_annotated$pvalue < 5e-8,]$rsid) +
-#   geom_hline(yintercept = -log10(5e-08),
-#              linetype ="longdash",
-#              color ="firebrick") + # genomewide significance
-#   geom_hline(yintercept = -log10(1e-5),
-#              linetype ="longdash",
-#              color ="darkgrey")  + # suggestive significance
-
-#     # Custom the theme:
-#     theme_bw() +
-#     theme(
-#       legend.position="none",
-#       panel.border = element_blank(),
-#       axis.text = element_text(size = 12,
-#                                color = "black"),
-#       axis.title = element_text(size = 14),
-#       axis.ticks = element_line(color = "black")
-#       )
-
-# # custom y axis step 2 (depends if ymax is defined)
-
-#  if(params$plot_ylimit == 0) {
-#   p2 <- p + scale_y_continuous(expand = c(0, 0),
-#                        name=expression(-log[10](italic(P))),
-#                        limits = c(0, sum(max(regenieTable_annotated$log10p), 0.5)))
-# } else {
-#   p2 <- p + scale_y_continuous(expand = c(0, 0),
-#                        name=expression(-log[10](italic(P))),
-#                        limits = c(0, params$plot_ylimit))
-# }
-
-# rm(p)
-
-#  if(!params$manhattan_annotation_enabled) {
-#   p3 <- p2
-# } else {
-#   p3 <- p2 + ggrepel::geom_text_repel(data = . %>% filter(log10p >= params$annotation_min_log10p) %>%
-#                                         group_by(CLOSEST_GENE_NAME) %>% 
-#                              top_n(1, log10p) %>% # extract highest y values
-#                              slice(1), # if there are ties, choose the first one
-#                              aes(label=CLOSEST_GENE_NAME), color =1)
-# }
-#  rm(regenieTable_annotated)
-#  rm(p2)
- 
-#  p3
-
+import pandas as pd
+import os
 ```
 
-## QQ Plot
-
-```{r, echo=FALSE, results='asis'}
-if(params$plot_ylimit == 0) {
-  limit = NULL
-} else {
-  limit = c(0, params$plot_ylimit )
-    cat(paste("Please note that the Y-axis limit has been set to '", params$plot_ylimit,"'. Please use the 'plot_ylimit' parameter to adapt this behaviour."))
-}
-
-fast_qq(regenieTable$pvalue, pointsize = 2)
-
-rm(regenieTable)
+```{python}
+#Load regenie results
+regenieTable = gl.Sumstats(regenie_merged, fmt="regenie", compression='gzip', build="19", sep="\t")
+regenieTable.data['P'] = 10 ** (-regenieTable.data['MLOG10P'])
 ```
+
+```{python}
+#Load top hits
+annotated_tophits = pd.read_csv(annotated_tophits_filename, sep="\t")
+annotated_tophits = annotated_tophits.rename(columns={'ID': 'SNPID'})
+
+#Group by gene name and select the top hit
+top_snp_per_gene = annotated_tophits.groupby('CLOSEST_GENE_NAME').apply(lambda x: x.loc[x['LOG10P'].idxmax()]).loc[:, ['CHROM','GENPOS','SNPID','LOG10P']].reset_index()
+
+#To avoid overlapping SNPs, group by 500kb windows
+top_snp_per_gene['group'] = (top_snp_per_gene['GENPOS'] // 500000).astype(int)
+top_snp_per_gene = top_snp_per_gene.groupby(['CHROM','group']).apply(lambda x: x.loc[x['LOG10P'].idxmax()])
+
+#Reset index and select only the SNPID column
+top_snp_per_gene = top_snp_per_gene.loc[:, ['SNPID','CLOSEST_GENE_NAME']].reset_index(drop=True)
+```
+
+```{python}
+#Merge top hits with regenie results
+regenieTable.data = pd.merge(regenieTable.data, top_snp_per_gene, on='SNPID', how='left')
+```
+
+```{python}
+#Plot Manhattan and QQ
+regenieTable.plot_mqq(
+  mode="qqm",
+  stratified=True, skip=2, 
+  build="19",
+  anno="CLOSEST_GENE_NAME", anno_set=top_snp_per_gene['SNPID'].tolist(),
+  highlight=top_snp_per_gene['SNPID'].tolist(),
+  suggestive_sig_line=True, sig_line=True)
+```
+
 
 ## Genes on top SNPs
 
@@ -205,6 +170,27 @@ if (file.exists(params$annotated_toploci_filename)) {
 } else {
   cat("No clumping loci available")
 }
+```
+
+```{python}
+#Check if a file exists
+if os.path.exists(annotated_toploci_filename):
+  annotatedTopLoci = pd.read_csv(annotated_toploci_filename, sep="\t")
+  annotatedTopLoci = annotatedTopLoci.sort_values(by=['P'], ascending=True)[0:10]
+
+  # assuming your DataFrame is called df
+  annotatedTopLoci[['CHR', 'START', 'END']] = annotatedTopLoci['POS'].str.extract(r'(chr){0,1}([0-9XY]+):([0-9]+)..([0-9]+)').iloc[:, 1:]
+
+  # For each line generate a regional plot using the plot_mqq function
+  for index, row in annotatedTopLoci.iterrows():
+    regenieTable.plot_mqq(
+      mode="r",
+      build="19",
+      region_grid=True,
+      region_ref = row['SNP'],
+      region=(row['CHR'],row['START'],row['END']),
+      vcf_path=gl.get_path("1kg_eur_hg19")
+      )
 ```
 
 ## Validation and Logs
