@@ -1,1 +1,4 @@
 test/
+tmp/
+gwas_report_template_files/
+*.png

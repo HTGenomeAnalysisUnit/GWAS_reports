@@ -1,241 +1,367 @@
 ---
-title: "Report: `r params$project`"
-output:
-  rmdformats::robobook:
-    self_contained: true
-    thumbnails: false
-    lightbox: true
-    gallery: false
-    highlight: tango
-params:
-  project: test-gwas
-  date: 2021-08-09
-  version: v0.2
-  regenie_merged: Q1.regenie.gz
-  regenie_filename: Q1.regenie.gz
-  phenotype: Q1
-  covariates: SEX
-  phenotype_file: phenos_quant.pheno.validated.txt
-  regenie_step1_log: test-ukbb-quant.step1.log
-  regenie_step2_log: test-ukbb-quant.step2.log
-  phenotype_log: phenos_quant.pheno.validated.log
-  covariate_log: covars.cov.validated.log
-  plot_ylimit: 0
-  manhattan_annotation_enabled: TRUE
-  annotation_min_log10p: 6
-  annotated_tophits_filename: Q1.regenie.filtered.annotated.txt.gz
-  annotated_toploci_filename: Q1.toploci.annot.tsv
+title: "Report: GWAS analysis"
+format: 
+  html:
+    page-layout: full
+    css: quarto_report.css
+    embed-resources: true
+number-sections: true
+toc: true
+toc-depth: 3
+toc-title: "Results sections"
+toc-location: "left"
+toc-expand: true
+jupyter: python3
+fig-dpi: 150
+execute:
+  echo: false
+  warning: false
 ---
 
-```{r setup, include=FALSE}
-library(DT)
-library(data.table)
-library(R.utils)
-library(ggplot2)
-library(skimr)
-library(dplyr)
-#library(ggfastman)
-options(DT.options = list(dom = 't'))
+```{python params}
+#| tags: [parameters]
+project = "test-gwas"
+date = "2021-08-09"
+version = "v0.2"
+sumstat_file = "test/p21001_i0.regenie.gz"
+phenotype = "p21001_i0"
+covariates = "COV1"
+phenotype_file = "test/regenie_pheno_input.pheno.validated.txt"
+regenie_step1_log = None
+regenie_step2_log = None
+phenotype_log = None
+covariate_log = None
+manhattan_annotation_type = "genes"
+annotation_min_log10p = "7.3"
+annotated_tophits_filename = "test/p21001_i0.regenie.filtered.annotated.fixed.txt.gz"
+annotated_toploci_filename = "test/p21001_i0.toploci.annot.tsv"
+max_loci = "5"
+regional_plot_window_kb = "300"
+genome_build = "hg19"
+sumstat_format = "regenie"
+
+#conda: python <3.10 matplotlib==3.5.0 mscorefonts tabix pip: skimpy gwaslab papermill
+```
+
+```{python load_libraries}
+import pandas as pd
+import gwaslab as gl
+import os
+from skimpy import skim
+from IPython.display import display, Markdown
+```
+
+```{python datatypes}
+annotation_min_log10p = float(annotation_min_log10p)
+max_loci = int(max_loci)
+regional_plot_window = int(regional_plot_window_kb) * 1000
+genome_build = genome_build.replace("hg", "")
+regenie_filename = os.path.basename(sumstat_file)
 ```
 
 ## Project Summary
 
+```{python project_summary}
+display(Markdown(
+  f"""
 | Parameter     | Value                                      |
 | ------------- |--------------------------------------------|
-| Project       | `r params$project`                         |
-| Pipeline Version       | `r params$version`                |
-| Date       | `r params$date`                         |
-| Phenotype File      | `r params$phenotype_file`            |
-| Phenotype       | `r params$phenotype`                     |
-| Covariates       | `r params$covariates`                     |
-| Regenie Output      | `r params$regenie_filename`             |
+| Project       | {project}                         |
+| Pipeline Version       | {version}                |
+| Date       | {date}                         |
+| Phenotype File      | {phenotype_file}            |
+| Phenotype       | {phenotype}                     |
+| Covariates       | {covariates}                     |
+| Regenie Output      | {regenie_filename}             |
+"""
+))
+```
 
 ## Phenotype Statistics
 
 ### Overview
 
-```{r, echo=FALSE}
-phenotypeTable <- read.table(params$phenotype_file, header=TRUE, sep="\t", dec = ".")
-dt <- as.data.frame(skim(phenotypeTable) %>%
-  dplyr::filter(skim_variable == params$phenotype))
-dt <- as.data.frame(as.matrix(dt), stringsAsFactors = F)
-datatable(dt)
+```{python phenotype_overview}
+phenotypeTable = pd.read_csv(phenotype_file, sep="\t")[[phenotype]]
+skim(phenotypeTable)
 ```
 
 ### Phenotype distribution
 
-```{r, echo=FALSE}
-if (length(unique(na.omit(phenotypeTable[[params$phenotype]]))) == 2) {
-  ggplot(phenotypeTable, aes_string(x=params$phenotype)) +
-    geom_bar(color="black", fill="white",bins=30) + theme_bw()
-} else {
-  ggplot(phenotypeTable, aes_string(x=params$phenotype)) +
-    geom_histogram(color="black", fill="white",bins=30) + theme_bw()
-}
+```{python plot_phenos}
+#Get the number of unique values
+n_unique = len(phenotypeTable[phenotypeTable[phenotype].notnull()][phenotype].unique())
+
+if (n_unique == 2):
+  #Plot barplot
+  phenotypeTable[phenotype].value_counts().plot(kind='bar')
+else:
+  #Plot histogram
+  phenotypeTable[phenotype].plot(kind='hist')
 ```
 
 ## Main results
 
-Main results are summarised here by Manhattan and QQ plot. Top SNPs (SNPs with LOG10P above `r params$annotation_min_log10p`) are annotated as follows:
+```{python main_results_md}
 
-1. the SNP with the highest LOG10P value is selected for each gene
-2. the resulting SNPs are further grouped by 500kb windows and the SNP with the highest LOG10P value is then annotated in the plot with the name of the closest gene
+display(Markdown(
+  f"""
+Main results are summarised here by Manhattan and QQ plot.
+  """
+))
 
-```{python}
-#| tags: [parameters]
+if manhattan_annotation_type == "genes":
+  display(Markdown(
+    f"""
+  Annotated SNPs represent the configured top hits (SNPs with LOG10P above {annotation_min_log10p}) processed as follows:
 
-regenie_merged = "test/p21001_i0.regenie.gz"
-annotated_tophits_filename = "test/p21001_i0.regenie.filtered.annotated.fixed.txt.gz"
-annotated_toploci_filename = "test/p21001_i0.toploci.annot.tsv"
+  1. the SNP with the highest LOG10P value is selected for each gene
+  2. the resulting SNPs are further grouped by 500kb windows and the SNP with the highest LOG10P value is then annotated in the plot with the name of the closest gene
+
+    """
+  ))
+else:
+  display(Markdown(
+    f"""
+ Annotated SNPs represent SNPs selected by gwaslab.get_lead() with the following parameters:
+
+ - windowsizekb: 500
+ - sig_level: {annotation_min_log10p}
+
+    """
+  ))
 ```
 
-```{python}
-import gwaslab as gl
-import pandas as pd
-import os
-```
+```{python read_sumstats}
+#| include: false
 
-```{python}
 #Load regenie results
-regenieTable = gl.Sumstats(regenie_merged, fmt="regenie", compression='gzip', build="19", sep="\t")
+regenieTable = gl.Sumstats(sumstat_file, fmt=sumstat_format, build=genome_build, sep="\t", verbose=False)
 regenieTable.data['P'] = 10 ** (-regenieTable.data['MLOG10P'])
 ```
 
-```{python}
-#Load top hits
-annotated_tophits = pd.read_csv(annotated_tophits_filename, sep="\t")
-annotated_tophits = annotated_tophits.rename(columns={'ID': 'SNPID'})
+```{python qqman}
+#| fig-width: 12
+#| fig-height: 5
+#| include: false
 
-#Group by gene name and select the top hit
-top_snp_per_gene = annotated_tophits.groupby('CLOSEST_GENE_NAME').apply(lambda x: x.loc[x['LOG10P'].idxmax()]).loc[:, ['CHROM','GENPOS','SNPID','LOG10P']].reset_index()
+#Load tophits
+annotated_tophits=pd.DataFrame()
+if annotated_tophits_filename:
+	annotated_tophits = pd.read_csv(annotated_tophits_filename, sep="\t")
+	annotated_tophits = annotated_tophits.rename(columns={'ID': 'SNPID'})
 
-#To avoid overlapping SNPs, group by 500kb windows
-top_snp_per_gene['group'] = (top_snp_per_gene['GENPOS'] // 500000).astype(int)
-top_snp_per_gene = top_snp_per_gene.groupby(['CHROM','group']).apply(lambda x: x.loc[x['LOG10P'].idxmax()])
+if manhattan_annotation_type == "genes" and not annotated_tophits.empty:
+  #Group by gene name and select the top hit
+  top_snp_per_gene = annotated_tophits.groupby('CLOSEST_GENE_NAME').apply(lambda x: x.loc[x['LOG10P'].idxmax()]).loc[:, ['CHROM','GENPOS','SNPID','LOG10P']].reset_index()
 
-#Reset index and select only the SNPID column
-top_snp_per_gene = top_snp_per_gene.loc[:, ['SNPID','CLOSEST_GENE_NAME']].reset_index(drop=True)
-```
+  #To avoid overlapping SNPs, group by 500kb windows
+  top_snp_per_gene['group'] = (top_snp_per_gene['GENPOS'] // 500000).astype(int)
+  top_snp_per_gene = top_snp_per_gene.groupby(['CHROM','group']).apply(lambda x: x.loc[x['LOG10P'].idxmax()])
 
-```{python}
-#Merge top hits with regenie results
-regenieTable.data = pd.merge(regenieTable.data, top_snp_per_gene, on='SNPID', how='left')
-```
+  #Reset index and select only the SNPID column
+  top_snp_per_gene = top_snp_per_gene.loc[:, ['SNPID','CLOSEST_GENE_NAME']].reset_index(drop=True)
 
-```{python}
+  #Merge top hits with regenie results
+  regenieTable.data = pd.merge(regenieTable.data, top_snp_per_gene, on='SNPID', how='left')
+
+  anno_value = "CLOSEST_GENE_NAME"
+  anno_set = top_snp_per_gene['SNPID'].tolist()
+
+else:
+  #Get lead SNPs in each locus
+  lead_snps = regenieTable.get_lead(
+     windowsizekb=500,
+     sig_level=annotation_min_log10p,
+     anno=False,
+     build=genome_build)
+
+  anno_value = "SNPID"
+  anno_set = lead_snps['SNPID'].tolist()
+
 #Plot Manhattan and QQ
-regenieTable.plot_mqq(
+figure, log = regenieTable.plot_mqq(
   mode="qqm",
   stratified=True, skip=2, 
-  build="19",
-  anno="CLOSEST_GENE_NAME", anno_set=top_snp_per_gene['SNPID'].tolist(),
-  highlight=top_snp_per_gene['SNPID'].tolist(),
-  suggestive_sig_line=True, sig_line=True)
+  build=genome_build,
+  anno=anno_value, anno_set=anno_set,
+  highlight=anno_set,
+  highlight_windowkb = 500,
+  additional_line=[10 ** -annotation_min_log10p], 
+  additional_line_color=['orange'],
+  suggestive_sig_line=True, sig_line=True,
+  verbose=False)
 ```
 
+```{python manhattan_display}
+#| fig-width: 12
+#| fig-height: 5
+
+display(figure)
+```
 
 ## Genes on top SNPs
 
-This table summarises the closest genes for top SNPs (SNPs with LOG10P above `r params$annotation_min_log10p`).
-It reports the list of genes overlapped by top SNPs and the number of such SNPs in the gene. 
-The lowest P-value and the minimum SNP-gene distance across top SNPs is also reported
+```{python tophits_md}
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
+display(Markdown(
+  f"""
+This table summarises the closest genes for configured top hits (SNPs with LOG10P above {annotation_min_log10p}).It reports the list of genes overlapped by top hits and for each
 
-annotatedTopHits <- fread(params$annotated_tophits_filename, select = c("CHROM", "GENPOS", "LOG10P", "ID", "CLOSEST_GENE_NAME", "CLOSEST_GENE_CHROMOSOME", "CLOSEST_GENE_START", "CLOSEST_GENE_END", "CLOSEST_GENE_DISTANCE"), header=TRUE, tmpdir="$PWD")
+- the number of top hit SNPs in the gene (VARIANTS). 
+- the P-value of the most associated SNP (GENE_LOG10P) 
+- the minimum SNP-gene distance across top SNPs
 
-topHitsGroupedByGene <-
-  annotatedTopHits %>%
-  group_by(CLOSEST_GENE_NAME, CLOSEST_GENE_CHROMOSOME, CLOSEST_GENE_START, CLOSEST_GENE_END) %>%
-  summarise(GENE_LOG10P = max(LOG10P), VARIANTS = n(), MIN_DISTANCE=min(CLOSEST_GENE_DISTANCE)) %>%
-  arrange(desc(GENE_LOG10P))
-
-colnames(topHitsGroupedByGene) <- c("GENE","CHROMOSOME","START","END","MAX_LOG10P","N_VARIANTS","MIN_DISTANCE")
-
-datatable(topHitsGroupedByGene)
-
+  """
+))
 ```
+
+:::{.scrolling}
+
+```{python tophits_table}
+
+# BEGIN: ed8c6549bwf9
+topHitsGroupedByGene = annotated_tophits.groupby(['CLOSEST_GENE_NAME', 'CLOSEST_GENE_CHROMOSOME', 'CLOSEST_GENE_START', 'CLOSEST_GENE_END']).agg({'LOG10P': 'max', 'SNPID': 'count', 'CLOSEST_GENE_DISTANCE': 'min'}).reset_index()
+topHitsGroupedByGene = topHitsGroupedByGene.rename(columns={'LOG10P': 'GENE_LOG10P', 'SNPID': 'VARIANTS', 'CLOSEST_GENE_DISTANCE': 'MIN_DISTANCE'})
+topHitsGroupedByGene = topHitsGroupedByGene.sort_values(by='GENE_LOG10P', ascending=False)
+# END: ed8c6549bwf9
+topHitsGroupedByGene
+```
+
+:::
 
 ## Top Loci
 
-This table lists top associated loci after clumping using plink. 
-The minimum log10 p-value for index SNPs is `r params$annotation_min_log10p`
+```{python toploci_md}
 
-```{r, echo=FALSE, message=FALSE, warning=FALSE}
-if (file.exists(params$annotated_toploci_filename)) {
-  annotatedTopLoci <- fread(params$annotated_toploci_filename, header=TRUE, tmpdir="$PWD")
-  annotatedTopLoci <- annotatedTopLoci[order(annotatedTopLoci$P),]
-  
-  datatable(annotatedTopLoci)
-} else {
-  cat("No clumping loci available")
-}
+display(Markdown(
+  f"""
+This table lists top associated loci after clumping using plink. 
+The minimum log10 p-value for index SNPs is {annotation_min_log10p}
+  """
+))
 ```
 
-```{python}
-#Check if a file exists
+:::{.scrolling}
+
+```{python toploci_table}
+#| asis: true
+
 if os.path.exists(annotated_toploci_filename):
   annotatedTopLoci = pd.read_csv(annotated_toploci_filename, sep="\t")
-  annotatedTopLoci = annotatedTopLoci.sort_values(by=['P'], ascending=True)[0:10]
+  annotatedTopLoci = annotatedTopLoci.sort_values(by=['P'], ascending=True)
+  display(annotatedTopLoci)
+else:
+  display(Markdown("**No clumping loci available**"))
+```
+
+:::
+
+```{python toploci_plot}
+#| fig-width: 3
+#| fig-height: 3
+#| include: false
+
+loci_plots = []
+
+#Check if a file exists
+if os.path.exists(annotated_toploci_filename):
+  if annotatedTopLoci.shape[0] < max_loci:
+    max_loci = annotatedTopLoci.shape[0]
+  top5loci = annotatedTopLoci[0:int(max_loci)].copy()
 
   # assuming your DataFrame is called df
-  annotatedTopLoci[['CHR', 'START', 'END']] = annotatedTopLoci['POS'].str.extract(r'(chr){0,1}([0-9XY]+):([0-9]+)..([0-9]+)').iloc[:, 1:]
+  top5loci[['CHR', 'START', 'END']] = top5loci['POS'].str.extract(r'(chr){0,1}([0-9XY]+):([0-9]+)..([0-9]+)').iloc[:, 1:]
 
   # For each line generate a regional plot using the plot_mqq function
-  for index, row in annotatedTopLoci.iterrows():
-    regenieTable.plot_mqq(
+  for index, row in top5loci.iterrows():
+    locus_id = f"locus_{index+1}"
+    start_value = int(row['START']) - int(regional_plot_window)
+    end_value = int(row['END']) + int(regional_plot_window)
+    if start_value < 0: start_value = 0
+    
+    locus_label = Markdown(f"### Locus {index+1} - {row['SNP']}\n\n")
+    figure, log = regenieTable.plot_mqq(
       mode="r",
-      build="19",
+      build=genome_build,
       region_grid=True,
       region_ref = row['SNP'],
-      region=(row['CHR'],row['START'],row['END']),
-      vcf_path=gl.get_path("1kg_eur_hg19")
+      region=(int(row['CHR']),start_value,end_value),
+      vcf_path=gl.get_path(f"1kg_eur_hg{genome_build}"),
+      verbose=False
       )
+    loci_plots.append([locus_label, figure])
+    # display(Markdown(f"## Locus {index+1} - {row['POS']} - {row['SNP']}\n\n![{locus_id}]({fig_filename})"))
 ```
 
-## Validation and Logs
+```{python toploci_plot_display}
+#| fig-width: 3
+#| fig-height: 3
 
-### Phenotype File Validation
-
-```{r, echo=FALSE}
-phenotype_log <- read.table(params$phenotype_log,
-                      sep ="\t", header = TRUE, dec =".")
-datatable(phenotype_log)
+for locus_plot in loci_plots:
+  display(locus_plot[0], locus_plot[1])
 ```
 
-### Covariate File Validation
 
-```{r, echo=FALSE, results='asis'}
-if(file.exists(params$covariate_log)) {
-step1_log <- read.table(params$covariate_log,sep ="\t", header = TRUE, dec =".")
-datatable(step1_log)
-} else {
-    cat("*No covariates available.*")
-}
+```{python logs_section_title}
+file_paths = [phenotype_log, covariate_log, regenie_step1_log, regenie_step2_log]
+
+# check if at least one file exists
+if any(file_paths):
+  display(Markdown("## Validation and Logs\n\n"))
 ```
 
-### Regenie Step 1 Log
-
-```{r, echo=FALSE, results='asis'}
-if(file.exists(params$regenie_step1_log)) {
-step1_log <- read.table(params$regenie_step1_log,sep ="\t", header = TRUE, dec =".")
-datatable(step1_log)
-} else {
-    cat("*Regenie step 1 skipped.*")
-}
+```{python log1}
+if phenotype_log:
+  if os.path.exists(phenotype_log):
+    phenotype_log_df = pd.read_csv(phenotype_log, sep="\t")
+    display(Markdown("### Phenotype File Validation\n\n"))
+    display(phenotype_log_df)
+  else:
+    display(Markdown("**Phenotype log file not found**\n\n"))
 ```
 
-### Regenie Step 2 Log
+```{python log2} 
+if covariate_log:
+  if os.path.exists(covariate_log):
+    covariate_log_df = pd.read_csv(covariate_log, sep="\t")
+    display(Markdown("### Covariate File Validation\n\n"))
+    display(covariate_log_df)
+  else:
+    display(Markdown("**Covariate log file not found**\n\n"))
+```
 
-```{r, echo=FALSE}
-step2_log <- read.table(params$regenie_step2_log,
-                      sep ="\t", header = TRUE, dec =".")
-datatable(step2_log)
+```{python log3}
+if regenie_step1_log:
+  if os.path.exists(regenie_step1_log):
+    step1_log_df = pd.read_csv(regenie_step1_log, sep="\t")
+    display(Markdown("### Regenie Step 1 Log\n\n"))
+    display(step1_log_df)
+  else:
+    display(Markdown("**Regenie Step 1 log file not found**\n\n"))
+```
+
+```{python log4}
+if regenie_step2_log:
+  if os.path.exists(regenie_step2_log):
+    step2_log_df = pd.read_csv(regenie_step2_log, sep="\t")
+    display(Markdown("### Regenie Step 2 Log\n\n"))
+    display(step2_log_df)
+  else:
+    display(Markdown("**Regenie Step 2 log file not found**\n\n"))
 ```
 
 
 ---
 
 <small>
-This report has been created with **[nf-fast-regenie `r params$version`](https://gitlab.fht.org/genome-analysis-unit/nf-pipeline-regenie)**, a nextflow pipeline developed by [Edoardo Giacopuzzi](mailto:edoardo.giacopuzzi@fht.org) at the Human Technopole Foundation, Milan, Italy. 
+
+```{python footer}
+display(Markdown(
+  f"""
+This report has been created with **[nf-fast-regenie {version}](https://github.com/HTGenomeAnalysisUnit/nf-pipeline-regenie.git)**, a nextflow pipeline developed by [Edoardo Giacopuzzi](mailto:edoardo.giacopuzzi@fht.org) at the Human Technopole Foundation, Milan, Italy. Plots are generated using [gwaslab package](https://github.com/Cloufield/gwaslab/)
+"""
+))
+```
+
 </small>
